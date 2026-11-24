@@ -1,0 +1,7 @@
+*.exe
+/bin/
+coverage.out
+coverage.html
+dead-letter.jsonl
+*.jsonl
+.env
