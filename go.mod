@@ -1,3 +1,3 @@
 module github.com/iamnobody0101/shopify-webhook-guard
 
-go 1.22
+go 1.26.0

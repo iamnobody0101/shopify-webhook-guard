@@ -33,7 +33,7 @@ Every Shopify app has to handle webhooks, and the details are easy to get wrong:
 
 ## Quickstart
 
-Requires Go 1.22+.
+Requires Go 1.26+.
 
 ```powershell
 # terminal 1: a stand-in app
