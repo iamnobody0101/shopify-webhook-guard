@@ -7,7 +7,7 @@ It sits in front of a Shopify app and makes sure that only authentic, fresh, non
 **Live demo:** https://shopify-webhook-guard.onrender.com (deployed on Render's free tier from this repo's Dockerfile)
 - [`/healthz`](https://shopify-webhook-guard.onrender.com/healthz) shows liveness, and [`/metrics`](https://shopify-webhook-guard.onrender.com/metrics) shows live counters.
 - `POST /webhooks` needs a valid HMAC from a private demo secret, so unsigned requests get `401` (that's the point). To try the full flow, run it locally (see Quickstart).
-- The demo forwards to `httpbin.org/post`. The free instance sleeps when idle, so the first request may take 30–60 s.
+- The demo forwards to `httpbin.org/post`. The free instance sleeps when idle, so the first request may take 30–60 s. That is far beyond Shopify's 5 s timeout, so this is a demo, not a production deployment. In production, run it on an always-on instance.
 
 ```
 Shopify ──HTTPS──▶  webhook-guard  ──▶  your app (UPSTREAM_URL)
@@ -83,6 +83,7 @@ Retries and the dead-letter queue: restart mockapp with `-fail-rate 1`, send a w
 - **Order of checks.** The body-size limit runs first so memory is bounded before any crypto. HMAC runs next, so a forged request never touches the dedupe store or the rate limiter and can't fill them.
 - **Rate limit before dedupe.** If a delivery that gets a 429 were marked as seen, Shopify's retry would then be dropped as a "duplicate" and the event lost. The same applies to `503 queue_full`, which un-marks its keys. Both cases have tests.
 - **Duplicates return `200`, not `4xx`.** Shopify should stop retrying something we already have.
+- **429/503 are not free.** Backpressure makes Shopify retry later, but each `429 rate_limited` or `503 queue_full` counts as a failed delivery. Eight in a row and Shopify deletes the subscription. Size `RATE_PER_SHOP`/`RATE_BURST` (default 50/s, burst 100) and `QUEUE_SIZE` (default 10,000) for peak traffic such as flash sales, so backpressure is a last resort. Alert on `webhook_guard_rejected_total{reason="rate_limited"}` and `{reason="queue_full"}`.
 - **`DEDUPE_TTL ≥ MAX_AGE + FUTURE_SKEW`** is enforced at startup. A byte-for-byte replay is then always either still remembered (duplicate) or too old (stale), never neither.
 - **ACK-then-forward** trades durability for latency. The queue is in memory, so a crash, as opposed to a graceful shutdown, loses queued deliveries. Graceful shutdown drains the queue or dead-letters what's left. See the roadmap.
 - **Full-jitter exponential backoff**, so many deliveries failing together don't all retry at the same moment against a recovering app.
@@ -99,7 +100,13 @@ Retries and the dead-letter queue: restart mockapp with `-fail-rate 1`, send a w
 - **Volumetric DDoS.** That belongs to the CDN or load balancer layer.
 - **Multiple replicas.** Dedupe state is per process; use the Redis store on the roadmap.
 
-> Note: `MAX_AGE` must be longer than Shopify's retry window, or legitimate retries get rejected as stale. Check this against current Shopify documentation for your setup.
+### Shopify delivery facts this design relies on
+
+From [Shopify's webhook docs](https://shopify.dev/docs/apps/build/webhooks/verify-deliveries):
+- **Shopify retries a failed delivery 8 times over 4 hours.** The default `MAX_AGE=6h` accepts every legitimate retry. A shorter value would reject real retries as stale.
+- **Shopify allows 1 s to connect and 5 s for the whole request.** Any non-2xx response, including 3xx, counts as a failure. This is why the guard acknowledges after verify + enqueue and forwards in the background.
+- **After 8 consecutive failures, Shopify deletes the subscription** (if it was created through the Admin API). See "429/503 are not free" above.
+- **Deduplicate on `X-Shopify-Webhook-Id`.** It is unique per delivery. `X-Shopify-Event-Id` is shared by every subscription's copy of the same event.
 
 ## Testing
 
