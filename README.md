@@ -130,6 +130,20 @@ Measured on 2026-11-24 on a laptop (Intel i5-13500H, 16 threads, Windows 11) ove
 
 Reproduce: `go run ./cmd/mockapp -quiet`, run the guard with the settings above, then `go run ./cmd/sendtest -secret s3cret -n 20000 -c 64`.
 
+## Verified against real Shopify webhooks
+
+On 2026-11-24, real webhooks **generated and signed by Shopify** (Shopify CLI 5.1.0, `shopify app webhook trigger`, topic `orders/create`, API version `2026-10`) were sent to the guard.
+
+| Where | Signed with | Result |
+|---|---|---|
+| Live Render deployment | the deployed secret | `accepted 1`, `forwarded 1`, and the payload with all `X-Shopify-*` headers arrived at the upstream |
+| Local guard | the configured secret | accepted; the 15,048-byte body was forwarded byte-for-byte |
+| Local guard | a different secret | rejected `401` (`invalid_signature`) |
+
+The captured delivery is now a regression test (`testdata/`, used by `internal/verify` and `internal/server`). The suite therefore checks a signature computed by **Shopify**, not only ones computed by our own `Sign()`, and it confirms that Shopify's real header formats pass every check: nanosecond `Triggered-At`, UUID `Webhook-Id`, `shop.myshopify.com`.
+
+**What the real test caught.** The first live attempt was rejected as `invalid_signature`, and the metrics couldn't say why: a missing header, a malformed one, and a wrong secret all reported the same reason. Diagnosis showed it was a secret mismatch between the sender and the deployment. The code was correct. The guard now reports three reasons, `missing_signature`, `malformed_signature` and `invalid_signature`, so `/metrics` alone answers that question next time. The HTTP response is still a generic `401` that reveals nothing to an attacker.
+
 ## Roadmap
 
 - [ ] Redis dedupe store (same `dedupe.Store` interface) for horizontal scaling

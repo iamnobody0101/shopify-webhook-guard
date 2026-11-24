@@ -1,0 +1,2 @@
+# Signed webhook fixtures must stay byte-exact: no line-ending conversion.
+testdata/* -text

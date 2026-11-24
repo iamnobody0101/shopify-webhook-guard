@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -110,7 +111,8 @@ func TestRejections(t *testing.T) {
 	}{
 		{"wrong method", httptest.NewRequest(http.MethodGet, "/webhooks", nil), 405, "method_not_allowed"},
 		{"body too large", signed(strings.Repeat("a", 2048), nil), 413, "body_too_large"},
-		{"missing signature", signed(`{}`, delHeader("X-Shopify-Hmac-Sha256")), 401, "invalid_signature"},
+		{"missing signature", signed(`{}`, delHeader("X-Shopify-Hmac-Sha256")), 401, "missing_signature"},
+		{"malformed signature", signed(`{}`, setHeader("X-Shopify-Hmac-Sha256", "not-base64!!")), 401, "malformed_signature"},
 		{"wrong secret", signed(`{}`, setHeader("X-Shopify-Hmac-Sha256", verify.Sign([]byte(`{}`), "guess"))), 401, "invalid_signature"},
 		{"tampered body", signed(`{"total":"1.00"}`, setHeader("X-Shopify-Hmac-Sha256", verify.Sign([]byte(`{"total":"999.00"}`), secret))), 401, "invalid_signature"},
 		{"non-shopify shop domain", signed(`{}`, setHeader("X-Shopify-Shop-Domain", "evil.example.com")), 400, "invalid_shop_domain"},
@@ -161,6 +163,52 @@ func TestAcceptsAndForwardsOnlyShopifyHeaders(t *testing.T) {
 	}
 	if f.count.get(MetricAccepted) != 1 {
 		t.Fatal("accepted metric not incremented")
+	}
+}
+
+// A real delivery generated and signed by Shopify (see testdata/README.md),
+// with the exact headers Shopify sent. It must pass every check and be queued
+// byte-for-byte.
+func TestAcceptsRealShopifyDelivery(t *testing.T) {
+	body, err := os.ReadFile("../../testdata/shopify_orders_create_2026-10.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	triggeredAt, _ := time.Parse(time.RFC3339Nano, "2026-11-24T22:09:32.655934808Z")
+
+	v, err := verify.New([]string{"local-test-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, c := &fakeQueue{}, &fakeCounter{m: map[string]int{}}
+	h := NewHandler(Config{MaxBodyBytes: 5 << 20, MaxAge: 6 * time.Hour, FutureSkew: 2 * time.Minute},
+		v, dedupe.NewMemory(time.Hour), ratelimit.New(0, 1), q, c, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.now = func() time.Time { return triggeredAt.Add(time.Second) }
+
+	r := httptest.NewRequest(http.MethodPost, "/webhooks", strings.NewReader(string(body)))
+	for k, val := range map[string]string{
+		"Content-Type":           "application/json",
+		"X-Shopify-Api-Version":  "2026-10",
+		"X-Shopify-Hmac-Sha256":  "/WGG5GIepPtQJVZF3fdeUBzDrzhd0QmX9J+aERuu5mc=",
+		"X-Shopify-Shop-Domain":  "shop.myshopify.com",
+		"X-Shopify-Test":         "true",
+		"X-Shopify-Topic":        "orders/create",
+		"X-Shopify-Triggered-At": triggeredAt.Format(time.RFC3339Nano),
+		"X-Shopify-Webhook-Id":   "a1cf3871-d038-4e02-9717-4ee98d8d21ae",
+	} {
+		r.Header.Set(k, val)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	if w.Code != 200 || w.Body.String() != "ok" {
+		t.Fatalf("real Shopify delivery: %d %q", w.Code, w.Body.String())
+	}
+	if len(q.items) != 1 || string(q.items[0].Body) != string(body) {
+		t.Fatal("real delivery was not queued byte-for-byte")
+	}
+	if q.items[0].Header.Get("X-Shopify-Test") != "true" {
+		t.Fatal("X-Shopify-Test header was not forwarded")
 	}
 }
 

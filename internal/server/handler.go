@@ -93,7 +93,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.verifier.Verify(body, shopifyHeader(r.Header, "Hmac-Sha256")); err != nil {
-		h.reject(w, r, http.StatusUnauthorized, "invalid_signature")
+		h.reject(w, r, http.StatusUnauthorized, signatureRejectReason(err))
 		return
 	}
 
@@ -163,6 +163,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	h.metrics.Inc(MetricAccepted)
 	writeText(w, http.StatusOK, "ok")
+}
+
+// signatureRejectReason distinguishes the three ways verification fails, so
+// metrics answer "what's wrong?" without extra tooling:
+//   - missing_signature: no HMAC header. Not from Shopify, or a proxy stripped it.
+//   - malformed_signature: not base64 SHA-256, e.g. hex-encoded by a hand-rolled client.
+//   - invalid_signature: well-formed but wrong. The secret doesn't match, or the body was altered.
+//
+// The HTTP response stays a generic 401 either way; only metrics and logs differ.
+func signatureRejectReason(err error) string {
+	switch {
+	case errors.Is(err, verify.ErrMissingSignature):
+		return "missing_signature"
+	case errors.Is(err, verify.ErrMalformedSignature):
+		return "malformed_signature"
+	default:
+		return "invalid_signature"
+	}
 }
 
 func (h *Handler) forget(keys []string) {
