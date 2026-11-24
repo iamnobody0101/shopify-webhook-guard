@@ -4,6 +4,11 @@ A drop-in security gateway for Shopify webhooks, written in Go with **zero third
 
 It sits in front of a Shopify app and makes sure that only authentic, fresh, non-duplicate webhooks reach it. It acknowledges Shopify within milliseconds and delivers to the app asynchronously, with retries and a dead-letter queue.
 
+**Live demo:** https://shopify-webhook-guard.onrender.com (deployed on Render's free tier from this repo's Dockerfile)
+- [`/healthz`](https://shopify-webhook-guard.onrender.com/healthz) shows liveness, and [`/metrics`](https://shopify-webhook-guard.onrender.com/metrics) shows live counters.
+- `POST /webhooks` needs a valid HMAC from a private demo secret, so unsigned requests get `401` (that's the point). To try the full flow, run it locally (see Quickstart).
+- The demo forwards to `httpbin.org/post`. The free instance sleeps when idle, so the first request may take 30–60 s.
+
 ```
 Shopify ──HTTPS──▶  webhook-guard  ──▶  your app (UPSTREAM_URL)
                      │ 1. method + body-size limit
